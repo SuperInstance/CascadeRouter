@@ -1,0 +1,67 @@
+{
+  "name": "@superinstance/cascade-router",
+  "version": "1.0.0",
+  "description": "Intelligent LLM routing with cost optimization and progress monitoring",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "cascade-router": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest",
+    "test:coverage": "vitest --coverage",
+    "lint": "eslint src --ext .ts",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run test && npm run build"
+  },
+  "keywords": [
+    "llm",
+    "routing",
+    "ai",
+    "cost-optimization",
+    "rate-limiting",
+    "provider-abstraction",
+    "anthropic",
+    "openai",
+    "ollama",
+    "mcp"
+  ],
+  "author": "SuperInstance",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SuperInstance/CascadeRouter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SuperInstance/CascadeRouter/issues"
+  },
+  "homepage": "https://github.com/SuperInstance/CascadeRouter#readme",
+  "dependencies": {
+    "commander": "^12.0.0",
+    "chalk": "^5.3.0",
+    "ora": "^8.0.1",
+    "inquirer": "^9.2.12",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/inquirer": "^9.0.7",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.2",
+    "vitest": "^1.0.4",
+    "@vitest/coverage-v8": "^1.0.4"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ]
+}
