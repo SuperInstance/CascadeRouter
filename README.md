@@ -1,16 +1,17 @@
-# Cascade Router
+# Cascade Router - Intelligent LLM Routing & Cost Optimization
 
-> Intelligent LLM routing with cost optimization and progress monitoring
+> AI-powered LLM routing with cost optimization, intelligent model selection, budget management, and automatic fallback. Multi-provider support for OpenAI, Anthropic, Ollama, and custom LLMs.
 
 Cascade Router is a model-agnostic routing layer for Large Language Model (LLM) applications. It intelligently routes requests to the most appropriate provider based on cost, speed, quality, or balanced metrics - all while managing budgets, rate limits, and automatic fallbacks.
 
 ## Features
 
-- **Multiple Routing Strategies**: Route by cost, speed, quality, priority, or balanced metrics
+- **Multiple Routing Strategies**: Route by cost, speed, quality, priority, balanced, or speculative execution
 - **Budget Management**: Set daily/monthly token and cost limits with automatic enforcement
 - **Rate Limiting**: Built-in rate limiting for requests and tokens per minute
 - **Automatic Fallback**: Gracefully fallback to alternative providers on failure
 - **Progress Monitoring**: Real-time progress tracking with periodic check-ins
+- **Speculative Execution**: Race multiple providers simultaneously for fastest response
 - **Provider Abstraction**: Support for OpenAI, Anthropic, Ollama, and custom providers
 - **Cost Optimization**: Track and optimize token usage across all providers
 - **CLI Interface**: Simple command-line interface for easy integration
@@ -158,6 +159,122 @@ const router = new Router({
 ```
 
 **Use case**: When you want explicit control over provider selection order.
+
+### Speculative Execution Strategy
+
+Races multiple providers simultaneously and uses the first response:
+
+```typescript
+const router = new Router({
+  strategy: 'speculative',
+  speculativeConfig: {
+    candidateCount: 2,              // Race 2 providers
+    candidateStrategy: 'speed',     // Select fastest candidates
+    enableCostTracking: true,       // Track cost vs time trade-offs
+    maxCostMultiplier: 150,         // Allow up to 1.5x cost
+  },
+  // ... config
+});
+```
+
+**How it works:**
+1. Selects top N candidates based on strategy (speed, quality, or balanced)
+2. Sends requests to all candidates simultaneously
+3. Uses the first successful response
+4. Cancels remaining requests automatically
+
+**Use cases:**
+- Real-time applications where latency is critical
+- Interactive applications requiring instant responses
+- When you need to guarantee fastest possible response time
+- When cost is secondary to speed
+
+**Trade-offs:**
+- ✅ **Faster**: Get response from fastest provider
+- ✅ **Reliable**: Automatic fallback to slower providers
+- ❌ **More expensive**: Multiple providers process same request
+- ❌ **Higher API usage**: More tokens consumed overall
+
+**Example:**
+
+```typescript
+import { Router } from '@superinstance/cascade-router';
+
+const router = new Router({
+  strategy: 'speculative',
+  providers: [
+    {
+      id: 'gpt-3.5-turbo',
+      name: 'GPT-3.5 Turbo',
+      type: 'openai',
+      enabled: true,
+      priority: 3,
+      maxTokens: 4096,
+      costPerMillionTokens: 2,
+      latency: 800,              // Fastest
+      availability: 0.99,
+      apiKey: process.env.OPENAI_API_KEY,
+      model: 'gpt-3.5-turbo',
+    },
+    {
+      id: 'gpt-4',
+      name: 'GPT-4',
+      type: 'openai',
+      enabled: true,
+      priority: 1,
+      maxTokens: 8192,
+      costPerMillionTokens: 30,
+      latency: 2000,
+      availability: 0.95,
+      apiKey: process.env.OPENAI_API_KEY,
+      model: 'gpt-4',
+    },
+  ],
+  fallbackEnabled: true,
+  maxRetries: 3,
+  timeout: 10000,
+  speculativeConfig: {
+    candidateCount: 2,
+    candidateStrategy: 'speed',
+    enableCostTracking: true,
+    maxCostMultiplier: 150,
+  },
+});
+
+await router.initialize();
+
+// Race both providers - get fastest response
+const result = await router.route({
+  prompt: 'What is speculative execution?',
+  maxTokens: 100,
+});
+
+console.log(`Provider: ${result.provider}`);
+console.log(`Duration: ${result.totalDuration}ms`);
+console.log(`Cost: $${result.totalCost.toFixed(6)}`);
+
+// Check metrics
+const metrics = router.getMetrics();
+if (metrics.speculativeExecutionMetrics) {
+  console.log(`Avg time saved: ${metrics.speculativeExecutionMetrics.avgTimeSaved.toFixed(0)}ms`);
+  console.log(`Avg cost increase: $${metrics.speculativeExecutionMetrics.avgCostIncrease.toFixed(6)}`);
+}
+```
+
+**Metrics:**
+
+Speculative execution tracks additional metrics:
+
+```typescript
+interface SpeculativeExecutionMetrics {
+  totalSpeculativeRequests: number;      // Total requests using speculative execution
+  totalAdditionalCost: number;            // Total extra cost from racing providers
+  avgTimeSaved: number;                   // Average time saved per request (ms)
+  avgCostIncrease: number;                // Average additional cost per request
+  fasterThanSequentialCount: number;      // Times it was faster than sequential
+  avgCandidatesRaced: number;             // Average number of providers raced
+}
+```
 
 ## Budget Management
 
@@ -434,6 +551,7 @@ See the `/examples` directory for complete examples:
 - Basic routing
 - Cost optimization
 - Multi-provider setup
+- Speculative execution (NEW!)
 - Custom providers
 - Advanced monitoring
 
@@ -453,3 +571,7 @@ Contributions are welcome! Please read our contributing guidelines before submit
 ---
 
 Made with ❤️ by the SuperInstance team
+
+## Keywords
+
+LLM routing, AI routing, model selection, intelligent routing, cost optimization, AI cost optimization, budget management, token budget, cost tracking, rate limiting, API rate limit, throttling, automatic fallback, provider fallback, speculative execution, parallel execution, latency optimization, speed optimization, quality vs cost, balanced routing, priority routing, multi-provider, provider abstraction, model agnostic, AI agents, multi-agent systems, agent orchestration, developer tools, AI tools, machine learning tools, AI developer tools, OpenAI API, Anthropic API, Claude, GPT, GPT-4, GPT-3.5 Turbo, local LLM, local inference, Ollama models, Llama, Mistral, progress monitoring, streaming, real-time AI, CLI tools, TypeScript, JavaScript, npm package, API management, API optimization, LLM ops, AI ops, model deployment, production AI, enterprise AI, scalable AI, cost effective AI

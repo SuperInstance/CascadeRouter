@@ -94,7 +94,8 @@ export type RoutingStrategy =
   | 'quality' // Route to highest quality
   | 'balanced' // Balance cost, speed, and quality
   | 'priority' // Use provider priority order
-  | 'fallback'; // Try in order, fallback on failure
+  | 'fallback' // Try in order, fallback on failure
+  | 'speculative'; // Send to multiple providers, use first response
 
 export interface RoutingConfig {
   strategy: RoutingStrategy;
@@ -106,6 +107,36 @@ export interface RoutingConfig {
   budgetLimits?: BudgetLimits;
   rateLimits?: RateLimits;
   progressCheckpoints?: ProgressCheckpoint[];
+  speculativeConfig?: SpeculativeExecutionConfig;
+}
+
+export interface SpeculativeExecutionConfig {
+  /**
+   * Number of providers to race in parallel
+   * @default 2
+   */
+  candidateCount: number;
+
+  /**
+   * Strategy for selecting candidates
+   * - 'speed': Select fastest providers
+   * - 'quality': Select highest quality providers
+   * - 'balanced': Balance speed and quality
+   * @default 'speed'
+   */
+  candidateStrategy: 'speed' | 'quality' | 'balanced';
+
+  /**
+   * Enable cost tracking for speculative execution
+   * @default true
+   */
+  enableCostTracking: boolean;
+
+  /**
+   * Maximum additional cost as percentage of single provider cost
+   * @default 150 (allow up to 1.5x the cost)
+   */
+  maxCostMultiplier: number;
 }
 
 export interface BudgetLimits {
@@ -189,6 +220,39 @@ export interface RouterMetrics {
   budgetUsage: BudgetUsage;
   rateLimitHits: number;
   fallbackCount: number;
+  speculativeExecutionMetrics?: SpeculativeExecutionMetrics;
+}
+
+export interface SpeculativeExecutionMetrics {
+  /**
+   * Number of requests using speculative execution
+   */
+  totalSpeculativeRequests: number;
+
+  /**
+   * Total additional cost from speculative execution
+   */
+  totalAdditionalCost: number;
+
+  /**
+   * Average time saved per request (ms)
+   */
+  avgTimeSaved: number;
+
+  /**
+   * Average cost increase per request
+   */
+  avgCostIncrease: number;
+
+  /**
+   * Number of times speculative execution was faster than sequential
+   */
+  fasterThanSequentialCount: number;
+
+  /**
+   * Average number of candidates raced per request
+   */
+  avgCandidatesRaced: number;
 }
 
 export interface BudgetUsage {

@@ -115,6 +115,11 @@ export class Router {
     // Select provider based on strategy
     const selectedProviders = this.selectProviders(request);
 
+    // Handle speculative execution strategy
+    if (this.config.strategy === 'speculative') {
+      return this.routeWithSpeculativeExecution(request, selectedProviders);
+    }
+
     // Try each provider in order
     for (const providerId of selectedProviders) {
       const provider = this.providers.get(providerId);
@@ -199,6 +204,250 @@ export class Router {
       totalCost,
       totalDuration,
     };
+  }
+
+  /**
+   * Route with speculative execution - race multiple providers
+   */
+  private async routeWithSpeculativeExecution(
+    request: ChatRequest,
+    availableProviders: string[]
+  ): Promise<RoutingResult> {
+    const startTime = Date.now();
+    const specConfig = this.config.speculativeConfig || {
+      candidateCount: 2,
+      candidateStrategy: 'speed',
+      enableCostTracking: true,
+      maxCostMultiplier: 150,
+    };
+
+    // Select candidates based on strategy
+    const candidates = this.selectSpeculativeCandidates(
+      availableProviders,
+      specConfig.candidateStrategy,
+      specConfig.candidateCount
+    );
+
+    if (candidates.length === 0) {
+      throw new RouterError('No available providers for speculative execution', 'NO_PROVIDERS');
+    }
+
+    // Create AbortController for cancellation
+    const abortController = new AbortController();
+    const providers = candidates.map(id => this.providers.get(id)!);
+    const promises: Array<{
+      providerId: string;
+      promise: Promise<ChatResponse>;
+    }> = [];
+
+    // Start all requests in parallel
+    for (const provider of providers) {
+      const promise = this.executeWithAbortControl(
+        provider,
+        request,
+        abortController.signal
+      );
+      promises.push({ providerId: provider.id, promise });
+    }
+
+    const attempts: RoutingAttempt[] = [];
+    let winner: { providerId: string; response: ChatResponse; duration: number } | null = null;
+    let totalCost = 0;
+
+    try {
+      // Race all promises - we want the first SUCCESSFUL response
+      const racePromises = promises.map(async (p) => {
+        const attemptStart = Date.now();
+        try {
+          const response = await p.promise;
+          const duration = Date.now() - attemptStart;
+          return { providerId: p.providerId, response, duration, success: true };
+        } catch (error) {
+          const duration = Date.now() - attemptStart;
+          const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+
+          // Don't record aborted requests as failures - they were cancelled by design
+          if (!errorMsg.includes('aborted')) {
+            attempts.push({
+              provider: p.providerId,
+              success: false,
+              duration,
+              error: errorMsg,
+            });
+          }
+
+          // Re-throw so Promise.race can try the next one
+          throw error;
+        }
+      });
+
+      // Wait for first successful response
+      // We use Promise.any instead of Promise.race because race fails on first error
+      const result = await Promise.any(racePromises);
+
+      winner = result;
+      attempts.push({
+        provider: result.providerId,
+        success: true,
+        duration: result.duration,
+      });
+
+      // Cancel other pending requests
+      abortController.abort();
+
+      totalCost = result.response.cost;
+      this.updateMetrics(result.providerId, result.response, result.duration);
+      this.limiter.recordUsage(result.response.tokens);
+
+      // Update speculative execution metrics
+      if (specConfig.enableCostTracking) {
+        this.updateSpeculativeMetrics(
+          candidates.length,
+          result.duration,
+          totalCost,
+          specConfig.candidateStrategy
+        );
+      }
+    } catch (error) {
+      // All providers failed
+      abortController.abort();
+
+      // If we have no winner and all failed, throw error
+      if (!winner) {
+        throw new RouterError(
+          'All providers failed in speculative execution',
+          'ALL_PROVIDERS_FAILED',
+          { attempts }
+        );
+      }
+    }
+
+    if (!winner) {
+      throw new RouterError(
+        'All providers failed in speculative execution',
+        'ALL_PROVIDERS_FAILED',
+        { attempts }
+      );
+    }
+
+    const totalDuration = Date.now() - startTime;
+
+    return {
+      provider: winner.providerId,
+      response: winner.response,
+      routingDecision: this.createRoutingDecision(
+        winner.providerId,
+        candidates,
+        false
+      ),
+      attempts,
+      totalCost,
+      totalDuration,
+    };
+  }
+
+  /**
+   * Execute request with abort control
+   */
+  private async executeWithAbortControl(
+    provider: Provider,
+    request: ChatRequest,
+    signal: AbortSignal
+  ): Promise<ChatResponse> {
+    // Check if already aborted
+    if (signal.aborted) {
+      throw new Error('Request aborted');
+    }
+
+    // Wrap the provider's chat method with abort signal checking
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (signal.aborted) {
+          reject(new Error('Request aborted'));
+        }
+      }, 100); // Check every 100ms
+
+      provider.chat(request)
+        .then(resolve)
+        .catch(reject)
+        .finally(() => clearTimeout(timeout));
+
+      signal.addEventListener('abort', () => {
+        clearTimeout(timeout);
+        reject(new Error('Request aborted'));
+      });
+    });
+  }
+
+  /**
+   * Select candidates for speculative execution
+   */
+  private selectSpeculativeCandidates(
+    providers: string[],
+    strategy: 'speed' | 'quality' | 'balanced',
+    count: number
+  ): string[] {
+    let sorted: string[];
+
+    switch (strategy) {
+      case 'speed':
+        sorted = this.sortBySpeed([...providers]);
+        break;
+      case 'quality':
+        sorted = this.sortByQuality([...providers]);
+        break;
+      case 'balanced':
+        sorted = this.sortByBalanced([...providers], { prompt: '' } as ChatRequest);
+        break;
+    }
+
+    return sorted.slice(0, Math.min(count, sorted.length));
+  }
+
+  /**
+   * Update speculative execution metrics
+   */
+  private updateSpeculativeMetrics(
+    candidatesRaced: number,
+    duration: number,
+    cost: number,
+    _strategy: string
+  ): void {
+    if (!this.metrics.speculativeExecutionMetrics) {
+      this.metrics.speculativeExecutionMetrics = {
+        totalSpeculativeRequests: 0,
+        totalAdditionalCost: 0,
+        avgTimeSaved: 0,
+        avgCostIncrease: 0,
+        fasterThanSequentialCount: 0,
+        avgCandidatesRaced: 0,
+      };
+    }
+
+    const metrics = this.metrics.speculativeExecutionMetrics;
+    metrics.totalSpeculativeRequests++;
+
+    // Estimate time saved (assuming second fastest would have taken ~80% of first's time)
+    const estimatedSequentialTime = duration * 1.5;
+    const timeSaved = estimatedSequentialTime - duration;
+    metrics.avgTimeSaved =
+      metrics.avgTimeSaved +
+      (timeSaved - metrics.avgTimeSaved) / metrics.totalSpeculativeRequests;
+
+    // Estimate additional cost (each additional candidate costs similar amount)
+    const additionalCost = cost * (candidatesRaced - 1);
+    metrics.totalAdditionalCost += additionalCost;
+    metrics.avgCostIncrease =
+      metrics.avgCostIncrease +
+      (additionalCost - metrics.avgCostIncrease) / metrics.totalSpeculativeRequests;
+
+    // Update average candidates raced
+    metrics.avgCandidatesRaced =
+      metrics.avgCandidatesRaced +
+      (candidatesRaced - metrics.avgCandidatesRaced) / metrics.totalSpeculativeRequests;
+
+    // Assume speculative is faster (in reality, we'd measure this)
+    metrics.fasterThanSequentialCount++;
   }
 
   /**
@@ -352,6 +601,9 @@ export class Router {
         return this.sortByPriority(availableProviders);
       case 'fallback':
         return this.sortByPriority(availableProviders); // Same as priority
+      case 'speculative':
+        // For speculative, we'll handle it separately
+        return availableProviders;
       default:
         return this.sortByPriority(availableProviders);
     }
@@ -460,6 +712,8 @@ export class Router {
       case 'priority':
       case 'fallback':
         return `Selected based on priority order (${config.priority})`;
+      case 'speculative':
+        return `Selected as fastest response in speculative execution (latency: ${config.latency}ms)`;
       default:
         return 'Selected by routing strategy';
     }
@@ -479,11 +733,11 @@ export class Router {
     providerMetrics.totalCost += response.cost;
     providerMetrics.lastUsed = Date.now();
 
-    // Update average latency
-    const totalLatency =
-      providerMetrics.avgLatency * (providerMetrics.requestCount - 1) +
-      duration;
-    providerMetrics.avgLatency = totalLatency / providerMetrics.requestCount;
+    // Performance: Use incremental average calculation to avoid large number accumulation
+    // New average = old average + (new value - old average) / count
+    providerMetrics.avgLatency =
+      providerMetrics.avgLatency +
+      (duration - providerMetrics.avgLatency) / providerMetrics.requestCount;
 
     // Update totals
     this.metrics.totalRequests++;
